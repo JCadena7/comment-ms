@@ -29,6 +29,6 @@ async function bootstrap() {
   
 
   await app.listen();
-  logger.log(`🚀 categorias microdervice running on port ${envs.port}`);
+  logger.log(`🚀 comentarios microdervice running on port ${envs.port}`);
 }
 bootstrap();

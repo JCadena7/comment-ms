@@ -1,9 +1,9 @@
 import { Module } from '@nestjs/common';
-import { CategoriasModule } from './categorias/categorias.module';
+import { ComentariosModule } from './comentarios/comentarios.module';
 import { DatabaseModule } from './database/database.module';
 
 @Module({
-  imports: [DatabaseModule, CategoriasModule],
+  imports: [DatabaseModule, ComentariosModule],
   controllers: [],
   providers: [],
 })
