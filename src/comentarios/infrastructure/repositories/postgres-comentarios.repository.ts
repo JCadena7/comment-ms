@@ -30,14 +30,16 @@ export class PostgresComentariosRepository implements IComentariosRepository, On
         DROP TRIGGER IF EXISTS trigger_notify_new_comment ON comentarios;
         DROP TRIGGER IF EXISTS trigger_notify_post_author_on_comment ON comentarios;
         DROP TRIGGER IF EXISTS trigger_notify_parent_comment_author_on_reply ON comentarios;
+        DROP TRIGGER IF EXISTS trigger_notify_comment_reply ON comentarios;
         DROP TRIGGER IF EXISTS trigger_update_comment_likes_count ON comment_likes;
         DROP TRIGGER IF EXISTS trigger_mark_comment_as_edited ON comentarios;
         DROP TRIGGER IF EXISTS trigger_update_comment_moderation ON comentarios;
         
-        -- Eliminar funciones antiguas
+        -- Eliminar funciones antiguas (todas las posibles variantes)
         DROP FUNCTION IF EXISTS notify_new_comment();
         DROP FUNCTION IF EXISTS notify_post_author_on_comment();
         DROP FUNCTION IF EXISTS notify_parent_comment_author_on_reply();
+        DROP FUNCTION IF EXISTS notify_comment_reply();
         DROP FUNCTION IF EXISTS update_comment_likes_count();
         DROP FUNCTION IF EXISTS mark_comment_as_edited();
         DROP FUNCTION IF EXISTS update_comment_moderation();
@@ -270,6 +272,92 @@ export class PostgresComentariosRepository implements IComentariosRepository, On
         FOR EACH ROW EXECUTE FUNCTION notify_parent_comment_author_on_reply();
       `);
 
+      // Trigger: Notificar al autor del post (notify_post_author_on_comment)
+      await client.query(`
+        CREATE OR REPLACE FUNCTION notify_post_author_on_comment()
+        RETURNS TRIGGER AS $$
+        DECLARE
+          post_author_id INTEGER;
+          post_title TEXT;
+          commenter_name TEXT;
+        BEGIN
+          -- Solo procesar si es un comentario principal (no una respuesta)
+          IF NEW.parent_id IS NULL THEN
+            -- Obtener el autor y título del post
+            SELECT p.usuario_id, p.titulo 
+            INTO post_author_id, post_title 
+            FROM posts p 
+            WHERE p.id = NEW.post_id;
+            
+            -- Obtener el nombre del comentarista
+            SELECT CONCAT(first_name, ' ', last_name) INTO commenter_name 
+            FROM usuarios WHERE id = NEW.usuario_id;
+            
+            -- Solo notificar si el comentarista no es el autor del post
+            IF post_author_id IS NOT NULL AND post_author_id != NEW.usuario_id THEN
+              INSERT INTO notifications (user_id, type, title, message, action_url)
+              VALUES (
+                post_author_id,
+                'info',
+                'Comentario en tu publicación',
+                commenter_name || ' comentó: "' || LEFT(NEW.contenido, 50) || '..."',
+                '/posts/' || NEW.post_id || '#comment-' || NEW.id
+              );
+            END IF;
+          END IF;
+          
+          RETURN NEW;
+        END;
+        $$ LANGUAGE plpgsql;
+
+        CREATE TRIGGER trigger_notify_post_author_on_comment
+        AFTER INSERT ON comentarios
+        FOR EACH ROW EXECUTE FUNCTION notify_post_author_on_comment();
+      `);
+
+      // Trigger: Notificar respuesta a comentario (notify_comment_reply)
+      await client.query(`
+        CREATE OR REPLACE FUNCTION notify_comment_reply()
+        RETURNS TRIGGER AS $$
+        DECLARE
+          parent_author_id INTEGER;
+          parent_content TEXT;
+          replier_name TEXT;
+        BEGIN
+          -- Solo procesar si es una respuesta (tiene parent_id)
+          IF NEW.parent_id IS NOT NULL THEN
+            -- Obtener el autor del comentario padre
+            SELECT c.usuario_id, c.contenido 
+            INTO parent_author_id, parent_content 
+            FROM comentarios c 
+            WHERE c.id = NEW.parent_id;
+            
+            -- Obtener el nombre del que responde
+            SELECT CONCAT(first_name, ' ', last_name) INTO replier_name 
+            FROM usuarios WHERE id = NEW.usuario_id;
+            
+            -- Solo notificar si el que responde no es el autor del comentario padre
+            IF parent_author_id IS NOT NULL AND parent_author_id != NEW.usuario_id THEN
+              INSERT INTO notifications (user_id, type, title, message, action_url)
+              VALUES (
+                parent_author_id,
+                'info',
+                'Respuesta a tu comentario',
+                replier_name || ' respondió: "' || LEFT(NEW.contenido, 50) || '..."',
+                '/posts/' || NEW.post_id || '#comment-' || NEW.id
+              );
+            END IF;
+          END IF;
+          
+          RETURN NEW;
+        END;
+        $$ LANGUAGE plpgsql;
+
+        CREATE TRIGGER trigger_notify_comment_reply
+        AFTER INSERT ON comentarios
+        FOR EACH ROW EXECUTE FUNCTION notify_comment_reply();
+      `);
+
       console.log('✅ Vistas y triggers de comentarios inicializados correctamente');
     } catch (error) {
       console.error('❌ Error al inicializar vistas y triggers de comentarios:', error);
@@ -316,8 +404,42 @@ export class PostgresComentariosRepository implements IComentariosRepository, On
       orderBy = 'created_at',
       order = 'desc',
       withUser = false,
+      withReplies = false,
     } = options;
 
+    // Si se solicitan réplicas y hay un post_id específico, usar estructura jerárquica
+    if (withReplies && post_id !== undefined) {
+      const hierarchicalComments = await this.findByPost(post_id, true);
+      
+      // Aplicar filtros adicionales si existen
+      let filteredComments = hierarchicalComments;
+      
+      if (status) {
+        filteredComments = this.filterCommentsByStatus(filteredComments, status);
+      }
+      
+      if (usuario_id !== undefined) {
+        filteredComments = this.filterCommentsByUser(filteredComments, usuario_id);
+      }
+      
+      if (search) {
+        filteredComments = this.filterCommentsBySearch(filteredComments, search);
+      }
+
+      const total = this.countTotalComments(filteredComments);
+      const offset = (page - 1) * limit;
+      const paginatedComments = filteredComments.slice(offset, offset + limit);
+
+      return {
+        items: paginatedComments as any,
+        total,
+        page,
+        limit,
+        pages: Math.ceil(total / limit),
+      };
+    }
+
+    // Flujo normal sin réplicas jerárquicas
     const offset = (page - 1) * limit;
     const conditions: string[] = [];
     const params: any[] = [];
@@ -391,6 +513,49 @@ export class PostgresComentariosRepository implements IComentariosRepository, On
       limit,
       pages: Math.ceil(total / limit),
     };
+  }
+
+  // Métodos auxiliares para filtrar comentarios jerárquicos
+  private filterCommentsByStatus(comments: any[], status: string): any[] {
+    return comments.filter(comment => {
+      const matchesStatus = comment.status === status;
+      if (comment.replies && comment.replies.length > 0) {
+        comment.replies = this.filterCommentsByStatus(comment.replies, status);
+      }
+      return matchesStatus || (comment.replies && comment.replies.length > 0);
+    });
+  }
+
+  private filterCommentsByUser(comments: any[], userId: number): any[] {
+    return comments.filter(comment => {
+      const matchesUser = comment.usuario_id === userId;
+      if (comment.replies && comment.replies.length > 0) {
+        comment.replies = this.filterCommentsByUser(comment.replies, userId);
+      }
+      return matchesUser || (comment.replies && comment.replies.length > 0);
+    });
+  }
+
+  private filterCommentsBySearch(comments: any[], search: string): any[] {
+    const searchLower = search.toLowerCase();
+    return comments.filter(comment => {
+      const matchesSearch = comment.contenido.toLowerCase().includes(searchLower);
+      if (comment.replies && comment.replies.length > 0) {
+        comment.replies = this.filterCommentsBySearch(comment.replies, search);
+      }
+      return matchesSearch || (comment.replies && comment.replies.length > 0);
+    });
+  }
+
+  private countTotalComments(comments: any[]): number {
+    let count = 0;
+    comments.forEach(comment => {
+      count++;
+      if (comment.replies && comment.replies.length > 0) {
+        count += this.countTotalComments(comment.replies);
+      }
+    });
+    return count;
   }
 
   async findOne(id: number, withUser = false): Promise<Comentario | ComentarioWithUser | null> {
