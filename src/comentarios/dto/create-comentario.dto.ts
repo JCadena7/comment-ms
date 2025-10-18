@@ -59,12 +59,4 @@ export class CreateComentarioDto {
   @IsString()
   @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
   moderation_notes?: string | null;
-
-  @IsOptional()
-  @IsDateString()
-  created_at?: string;
-
-  @IsOptional()
-  @IsDateString()
-  updated_at?: string;
 }

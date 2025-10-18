@@ -13,6 +13,7 @@ import { Comentario, ComentarioWithReplies, ComentarioWithUser, ComentarioStats 
 @Injectable()
 export class PostgresComentariosRepository implements IComentariosRepository, OnModuleInit {
   
+    // en produccion se desactiva
   async onModuleInit() {
     await this.initializeViewsAndTriggers();
   }
@@ -23,6 +24,25 @@ export class PostgresComentariosRepository implements IComentariosRepository, On
   private async initializeViewsAndTriggers() {
     const client = await db.pool.connect();
     try {
+      // ========== LIMPIAR TRIGGERS Y FUNCIONES ANTIGUAS ==========
+      await client.query(`
+        -- Eliminar triggers antiguos
+        DROP TRIGGER IF EXISTS trigger_notify_new_comment ON comentarios;
+        DROP TRIGGER IF EXISTS trigger_notify_post_author_on_comment ON comentarios;
+        DROP TRIGGER IF EXISTS trigger_notify_parent_comment_author_on_reply ON comentarios;
+        DROP TRIGGER IF EXISTS trigger_update_comment_likes_count ON comment_likes;
+        DROP TRIGGER IF EXISTS trigger_mark_comment_as_edited ON comentarios;
+        DROP TRIGGER IF EXISTS trigger_update_comment_moderation ON comentarios;
+        
+        -- Eliminar funciones antiguas
+        DROP FUNCTION IF EXISTS notify_new_comment();
+        DROP FUNCTION IF EXISTS notify_post_author_on_comment();
+        DROP FUNCTION IF EXISTS notify_parent_comment_author_on_reply();
+        DROP FUNCTION IF EXISTS update_comment_likes_count();
+        DROP FUNCTION IF EXISTS mark_comment_as_edited();
+        DROP FUNCTION IF EXISTS update_comment_moderation();
+      `);
+
       // ========== VISTAS ==========
       
       // Vista: Comentarios con información del usuario
@@ -176,9 +196,9 @@ export class PostgresComentariosRepository implements IComentariosRepository, On
         FOR EACH ROW EXECUTE FUNCTION update_comment_moderation();
       `);
 
-      // Trigger: Notificar al autor del post cuando hay un nuevo comentario
+      // Trigger: Notificar nuevo comentario (notify_new_comment)
       await client.query(`
-        CREATE OR REPLACE FUNCTION notify_post_author_on_comment()
+        CREATE OR REPLACE FUNCTION notify_new_comment()
         RETURNS TRIGGER AS $$
         DECLARE
           post_author_id INTEGER;
@@ -207,10 +227,9 @@ export class PostgresComentariosRepository implements IComentariosRepository, On
         END;
         $$ LANGUAGE plpgsql;
 
-        DROP TRIGGER IF EXISTS trigger_notify_post_author_on_comment ON comentarios;
-        CREATE TRIGGER trigger_notify_post_author_on_comment
+        CREATE TRIGGER trigger_notify_new_comment
         AFTER INSERT ON comentarios
-        FOR EACH ROW EXECUTE FUNCTION notify_post_author_on_comment();
+        FOR EACH ROW EXECUTE FUNCTION notify_new_comment();
       `);
 
       // Trigger: Notificar al autor del comentario padre cuando hay una respuesta
@@ -246,7 +265,6 @@ export class PostgresComentariosRepository implements IComentariosRepository, On
         END;
         $$ LANGUAGE plpgsql;
 
-        DROP TRIGGER IF EXISTS trigger_notify_parent_comment_author_on_reply ON comentarios;
         CREATE TRIGGER trigger_notify_parent_comment_author_on_reply
         AFTER INSERT ON comentarios
         FOR EACH ROW EXECUTE FUNCTION notify_parent_comment_author_on_reply();
