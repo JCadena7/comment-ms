@@ -55,6 +55,7 @@ export class PostgresComentariosRepository implements IComentariosRepository, On
           json_build_object(
             'id', u.id,
             'username', u.username,
+            'email', u.email,
             'first_name', u.first_name,
             'last_name', u.last_name,
             'avatar', u.avatar
@@ -130,6 +131,7 @@ export class PostgresComentariosRepository implements IComentariosRepository, On
           json_build_object(
             'id', u.id,
             'username', u.username,
+            'email', u.email,
             'first_name', u.first_name,
             'last_name', u.last_name,
             'avatar', u.avatar
@@ -407,36 +409,42 @@ export class PostgresComentariosRepository implements IComentariosRepository, On
       withReplies = false,
     } = options;
 
-    // Si se solicitan réplicas y hay un post_id específico, usar estructura jerárquica
-    if (withReplies && post_id !== undefined) {
-      const hierarchicalComments = await this.findByPost(post_id, true);
-      
-      // Aplicar filtros adicionales si existen
-      let filteredComments = hierarchicalComments;
-      
-      if (status) {
-        filteredComments = this.filterCommentsByStatus(filteredComments, status);
-      }
-      
-      if (usuario_id !== undefined) {
-        filteredComments = this.filterCommentsByUser(filteredComments, usuario_id);
-      }
-      
-      if (search) {
-        filteredComments = this.filterCommentsBySearch(filteredComments, search);
-      }
+    // Si se solicitan réplicas, usar estructura jerárquica
+    if (withReplies) {
+      // Si hay un post_id específico, usar findByPost
+      if (post_id !== undefined) {
+        const hierarchicalComments = await this.findByPost(post_id, true, withUser);
+        
+        // Aplicar filtros adicionales si existen
+        let filteredComments = hierarchicalComments;
+        
+        if (status) {
+          filteredComments = this.filterCommentsByStatus(filteredComments, status);
+        }
+        
+        if (usuario_id !== undefined) {
+          filteredComments = this.filterCommentsByUser(filteredComments, usuario_id);
+        }
+        
+        if (search) {
+          filteredComments = this.filterCommentsBySearch(filteredComments, search);
+        }
 
-      const total = this.countTotalComments(filteredComments);
-      const offset = (page - 1) * limit;
-      const paginatedComments = filteredComments.slice(offset, offset + limit);
+        const total = this.countTotalComments(filteredComments);
+        const offset = (page - 1) * limit;
+        const paginatedComments = filteredComments.slice(offset, offset + limit);
 
-      return {
-        items: paginatedComments as any,
-        total,
-        page,
-        limit,
-        pages: Math.ceil(total / limit),
-      };
+        return {
+          items: paginatedComments as any,
+          total,
+          page,
+          limit,
+          pages: Math.ceil(total / limit),
+        };
+      } else {
+        // Sin post_id específico, obtener todos los comentarios con réplicas
+        return this.findAllWithReplies(options);
+      }
     }
 
     // Flujo normal sin réplicas jerárquicas
@@ -515,6 +523,151 @@ export class PostgresComentariosRepository implements IComentariosRepository, On
     };
   }
 
+  /**
+   * Obtiene todos los comentarios con réplicas en estructura jerárquica
+   */
+  private async findAllWithReplies(options: FindAllComentariosOptions): Promise<Paginated<ComentarioWithReplies>> {
+    const {
+      page = 1,
+      limit = 10,
+      search,
+      usuario_id,
+      parent_id,
+      status,
+      is_edited,
+      orderBy = 'created_at',
+      order = 'desc',
+      withUser = false,
+    } = options;
+
+    // Construir condiciones para la consulta
+    const conditions: string[] = [];
+    const params: any[] = [];
+    let paramIndex = 1;
+
+    if (search) {
+      conditions.push(`c.contenido ILIKE $${paramIndex}`);
+      params.push(`%${search}%`);
+      paramIndex++;
+    }
+
+    if (usuario_id !== undefined) {
+      conditions.push(`c.usuario_id = $${paramIndex}`);
+      params.push(usuario_id);
+      paramIndex++;
+    }
+
+    if (status) {
+      conditions.push(`c.status = $${paramIndex}`);
+      params.push(status);
+      paramIndex++;
+    }
+
+    if (is_edited !== undefined) {
+      conditions.push(`c.is_edited = $${paramIndex}`);
+      params.push(is_edited);
+      paramIndex++;
+    }
+
+    // Solo comentarios principales si parent_id no está especificado
+    if (parent_id === undefined) {
+      conditions.push(`c.parent_id IS NULL`);
+    } else if (parent_id === null) {
+      conditions.push(`c.parent_id IS NULL`);
+    } else {
+      conditions.push(`c.parent_id = $${paramIndex}`);
+      params.push(parent_id);
+      paramIndex++;
+    }
+
+    const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+
+    // Consulta recursiva para obtener comentarios con réplicas
+    const query = withUser
+      ? `WITH RECURSIVE comment_tree AS (
+          -- Comentarios principales
+          SELECT c.*, 0 as depth, ARRAY[c.id] as path,
+            json_build_object(
+              'id', u.id,
+              'username', u.username,
+              'email', u.email,
+              'first_name', u.first_name,
+              'last_name', u.last_name,
+              'avatar', u.avatar
+            ) as usuario
+          FROM comentarios c
+          LEFT JOIN usuarios u ON c.usuario_id = u.id
+          ${whereClause}
+          
+          UNION ALL
+          
+          -- Respuestas recursivas
+          SELECT c.*, ct.depth + 1, ct.path || c.id,
+            json_build_object(
+              'id', u.id,
+              'username', u.username,
+              'email', u.email,
+              'first_name', u.first_name,
+              'last_name', u.last_name,
+              'avatar', u.avatar
+            ) as usuario
+          FROM comentarios c
+          LEFT JOIN usuarios u ON c.usuario_id = u.id
+          INNER JOIN comment_tree ct ON c.parent_id = ct.id
+        )
+        SELECT * FROM comment_tree
+        ORDER BY path`
+      : `WITH RECURSIVE comment_tree AS (
+          -- Comentarios principales
+          SELECT c.*, 0 as depth, ARRAY[c.id] as path
+          FROM comentarios c
+          ${whereClause}
+          
+          UNION ALL
+          
+          -- Respuestas recursivas
+          SELECT c.*, ct.depth + 1, ct.path || c.id
+          FROM comentarios c
+          INNER JOIN comment_tree ct ON c.parent_id = ct.id
+        )
+        SELECT * FROM comment_tree
+        ORDER BY path`;
+
+    const result = await db.pool.query(query, params);
+
+    // Organizar en estructura jerárquica
+    const commentsMap = new Map<number, ComentarioWithReplies>();
+    const rootComments: ComentarioWithReplies[] = [];
+
+    result.rows.forEach((row: any) => {
+      const comment: ComentarioWithReplies = { ...row, replies: [] };
+      commentsMap.set(row.id, comment);
+
+      if (row.parent_id === null) {
+        rootComments.push(comment);
+      } else {
+        const parent = commentsMap.get(row.parent_id);
+        if (parent) {
+          parent.replies = parent.replies || [];
+          parent.replies.push(comment);
+        }
+      }
+    });
+
+    // Aplicar paginación
+    const total = rootComments.length;
+    const offset = (page - 1) * limit;
+    const paginatedComments = rootComments.slice(offset, offset + limit);
+
+    return {
+      items: paginatedComments,
+      total,
+      page,
+      limit,
+      pages: Math.ceil(total / limit),
+    };
+  }
+
   // Métodos auxiliares para filtrar comentarios jerárquicos
   private filterCommentsByStatus(comments: any[], status: string): any[] {
     return comments.filter(comment => {
@@ -567,28 +720,62 @@ export class PostgresComentariosRepository implements IComentariosRepository, On
     return result.rows[0] || null;
   }
 
-  async findByPost(postId: number, withReplies = false): Promise<ComentarioWithReplies[]> {
+  async findByPost(postId: number, withReplies = false, withUser = false): Promise<ComentarioWithReplies[]> {
     if (withReplies) {
       // Obtener comentarios principales con sus respuestas
-      const result = await db.pool.query(
-        `WITH RECURSIVE comment_tree AS (
-          -- Comentarios principales
-          SELECT c.*, 0 as depth, ARRAY[c.id] as path
-          FROM comentarios c
-          WHERE c.post_id = $1 AND c.parent_id IS NULL
-          
-          UNION ALL
-          
-          -- Respuestas recursivas
-          SELECT c.*, ct.depth + 1, ct.path || c.id
-          FROM comentarios c
-          INNER JOIN comment_tree ct ON c.parent_id = ct.id
-          WHERE c.post_id = $1
-        )
-        SELECT * FROM comment_tree
-        ORDER BY path`,
-        [postId]
-      );
+      const query = withUser
+        ? `WITH RECURSIVE comment_tree AS (
+            -- Comentarios principales
+            SELECT c.*, 0 as depth, ARRAY[c.id] as path,
+              json_build_object(
+                'id', u.id,
+                'username', u.username,
+                'email', u.email,
+                'first_name', u.first_name,
+                'last_name', u.last_name,
+                'avatar', u.avatar
+              ) as usuario
+            FROM comentarios c
+            LEFT JOIN usuarios u ON c.usuario_id = u.id
+            WHERE c.post_id = $1 AND c.parent_id IS NULL
+            
+            UNION ALL
+            
+            -- Respuestas recursivas
+            SELECT c.*, ct.depth + 1, ct.path || c.id,
+              json_build_object(
+                'id', u.id,
+                'username', u.username,
+                'email', u.email,
+                'first_name', u.first_name,
+                'last_name', u.last_name,
+                'avatar', u.avatar
+              ) as usuario
+            FROM comentarios c
+            LEFT JOIN usuarios u ON c.usuario_id = u.id
+            INNER JOIN comment_tree ct ON c.parent_id = ct.id
+            WHERE c.post_id = $1
+          )
+          SELECT * FROM comment_tree
+          ORDER BY path`
+        : `WITH RECURSIVE comment_tree AS (
+            -- Comentarios principales
+            SELECT c.*, 0 as depth, ARRAY[c.id] as path
+            FROM comentarios c
+            WHERE c.post_id = $1 AND c.parent_id IS NULL
+            
+            UNION ALL
+            
+            -- Respuestas recursivas
+            SELECT c.*, ct.depth + 1, ct.path || c.id
+            FROM comentarios c
+            INNER JOIN comment_tree ct ON c.parent_id = ct.id
+            WHERE c.post_id = $1
+          )
+          SELECT * FROM comment_tree
+          ORDER BY path`;
+
+      const result = await db.pool.query(query, [postId]);
 
       // Organizar en estructura jerárquica
       const commentsMap = new Map<number, ComentarioWithReplies>();
@@ -612,8 +799,9 @@ export class PostgresComentariosRepository implements IComentariosRepository, On
       return rootComments;
     } else {
       // Solo comentarios principales
+      const fromClause = withUser ? 'v_comentarios_con_usuario' : 'comentarios';
       const result = await db.pool.query(
-        `SELECT * FROM comentarios 
+        `SELECT * FROM ${fromClause}
          WHERE post_id = $1 AND parent_id IS NULL
          ORDER BY created_at DESC`,
         [postId]

@@ -39,7 +39,7 @@ export interface IComentariosRepository {
   create(data: CreateComentarioData): Promise<Comentario>;
   findAll(options?: FindAllComentariosOptions): Promise<Paginated<Comentario | ComentarioWithUser>>;
   findOne(id: number, withUser?: boolean): Promise<Comentario | ComentarioWithUser | null>;
-  findByPost(postId: number, withReplies?: boolean): Promise<ComentarioWithReplies[]>;
+  findByPost(postId: number, withReplies?: boolean, withUser?: boolean): Promise<ComentarioWithReplies[]>;
   findReplies(parentId: number): Promise<Comentario[]>;
   update(id: number, data: UpdateComentarioData): Promise<Comentario | null>;
   moderate(id: number, data: ModerateComentarioData): Promise<Comentario | null>;

@@ -10,7 +10,7 @@ export class FindByPostUseCase {
     private readonly repository: IComentariosRepository,
   ) {}
 
-  async execute(postId: number, withReplies = false): Promise<ComentarioWithReplies[]> {
-    return this.repository.findByPost(postId, withReplies);
+  async execute(postId: number, withReplies = false, withUser = false): Promise<ComentarioWithReplies[]> {
+    return this.repository.findByPost(postId, withReplies, withUser);
   }
 }

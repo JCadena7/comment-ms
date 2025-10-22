@@ -53,7 +53,8 @@ export class ComentariosController {
   findByPost(@Payload() payload: any) {
     const postId = typeof payload === 'number' ? payload : Number(payload?.postId || payload?.post_id);
     const withReplies = !!(typeof payload === 'object' && payload?.withReplies);
-    return this.findByPostUseCase.execute(postId, withReplies);
+    const withUser = !!(typeof payload === 'object' && payload?.withUser);
+    return this.findByPostUseCase.execute(postId, withReplies, withUser);
   }
 
   @MessagePattern('findComentarioReplies')
