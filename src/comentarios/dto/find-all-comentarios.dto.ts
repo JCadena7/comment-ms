@@ -1,6 +1,5 @@
-import { Type } from 'class-transformer';
+import { Type, Transform } from 'class-transformer';
 import { IsOptional, IsInt, IsString, IsEnum, IsBoolean, Min } from 'class-validator';
-import { Transform } from 'class-transformer';
 
 export class FindAllComentariosDto {
   @IsOptional()

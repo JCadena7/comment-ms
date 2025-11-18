@@ -1,6 +1,5 @@
-import { Type } from 'class-transformer';
+import { Type, Transform } from 'class-transformer';
 import { IsNotEmpty, IsString, IsInt, IsOptional, IsEnum, IsBoolean, IsDateString } from 'class-validator';
-import { Transform } from 'class-transformer';
 
 export class CreateComentarioDto {
   @IsOptional()
